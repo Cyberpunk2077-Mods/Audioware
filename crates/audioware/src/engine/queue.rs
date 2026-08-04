@@ -1,7 +1,7 @@
 use std::{sync::OnceLock, thread::JoinHandle, time::Duration};
 
 use bitflags::bitflags;
-use crossbeam::channel::{Receiver, Sender, bounded, tick, unbounded};
+use crossbeam::channel::{Receiver, Select, Sender, bounded, tick, unbounded};
 use hotpath::{Format, HotpathGuardBuilder, Section};
 use kira::{
     AudioManagerSettings,

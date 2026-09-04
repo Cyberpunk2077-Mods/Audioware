@@ -1,47 +1,59 @@
-name: Release
+name: Build Mod Package
 on:
   push:
-    branches:
-      - main
-    tags:
-      - "v*"
-      - "rc*"
-      - "beta*"
-      - "alpha*"
-
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: write
 env:
   CARGO_TERM_COLOR: always
-  IS_DRAFT: ${{ startsWith(github.ref_name, 'beta') || startsWith(github.ref_name, 'alpha') }}
-  IS_PRERELEASE: true
-  BIN-NAME: Audioware-windows-${{ github.ref_name }}
   CARGO_NET_GIT_FETCH_WITH_CLI: true
-
+  TARGET_PLATFORM: windows
+  TARGET_ARCH: x64
+  # Reserved, disabled targets: windows_arm, macos_x64, macos_arm, linux_x64, linux_arm.
+  MOD_NAME: Audioware
 jobs:
-  gaming:
-    uses: ./.github/workflows/bundle.yml
-    with:
-      tag: ${{ github.ref_name }}
-      release: true
-  modding:
-    uses: ./.github/workflows/bundle.yml
-    with:
-      tag: ${{ github.ref_name }}
-      release: false
-  release:
-    if: ${{ startsWith(github.event.ref, 'refs/tags') }}
+  package:
     runs-on: windows-2025
-    needs: [gaming, modding]
     steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v8
+      - uses: actions/checkout@v4
         with:
-          path: release
-          merge-multiple: true
-      - name: Create release ${{ github.ref_name }}
-        uses: ncipollo/release-action@v1
+          fetch-depth: 0
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          artifacts: "release/*"
-          draft: ${{ env.IS_DRAFT }}
-          prerelease: ${{ env.IS_PRERELEASE }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          artifactErrorsFailBuild: true
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply tag version to source
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $content = Get-Content Cargo.toml -Raw
+          $content = $content -replace '(?m)(\[workspace\.package\]\s*\r?\nversion\s*=\s*)"[^"]+"', "`$1`"$version`""
+          Set-Content Cargo.toml $content
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: Build windows_x64
+        run: just ci bundle release ""
+      - name: Package
+        id: meta
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '0.0.0' }
+          $suffix = if ($env:GITHUB_REF_TYPE -eq 'tag') { '' } else { "_$(Get-Date -Format 'yyyy.M').$((git rev-list --count --since="$(Get-Date -Day 1 -Format yyyy-MM-dd)" HEAD))" }
+          $artifact = "${env:MOD_NAME}_v${version}_${env:TARGET_PLATFORM}_${env:TARGET_ARCH}${suffix}.zip"
+          Compress-Archive -Path bundle/bin/* -DestinationPath $artifact -CompressionLevel Optimal -Force
+          "artifact=$artifact" >> $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact }}
+          path: ${{ steps.meta.outputs.artifact }}
+          if-no-files-found: error
+      - name: Create draft release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$env:GITHUB_REF_NAME" "${{ steps.meta.outputs.artifact }}" --draft --generate-notes --verify-tag
